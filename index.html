@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SOL Trading Dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.8.0/Recharts.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0d1117; color: #e6edf3; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; }
+    ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #161b22; } ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+    .card { background: #161b22; border: 1px solid #21262d; border-radius: 12px; padding: 20px; }
+    .btn { padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; transition: all 0.15s; }
+    .btn-green { background: #238636; color: #fff; } .btn-green:hover { background: #2ea043; }
+    .btn-red { background: #da3633; color: #fff; } .btn-red:hover { background: #f85149; }
+    .btn-ghost { background: #21262d; color: #e6edf3; } .btn-ghost:hover { background: #30363d; }
+    input, select { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; color: #e6edf3; padding: 8px 12px; font-size: 13px; width: 100%; }
+    input:focus, select:focus { outline: none; border-color: #388bfd; }
+    label { font-size: 12px; color: #8b949e; margin-bottom: 4px; display: block; }
+    .tag { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+    .tag-green { background: #033a16; color: #3fb950; } .tag-red { background: #490202; color: #f85149; }
+    .tag-yellow { background: #2d2103; color: #d29922; } .tag-blue { background: #031d2e; color: #388bfd; }
+    .pos { color: #3fb950; } .neg { color: #f85149; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { color: #8b949e; font-weight: 500; text-align: left; padding: 8px 12px; border-bottom: 1px solid #21262d; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    td { padding: 10px 12px; border-bottom: 1px solid #161b22; }
+    tr:hover td { background: #1c2128; }
+    .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; display: flex; align-items: center; justify-content: center; }
+    .modal { background: #161b22; border: 1px solid #30363d; border-radius: 16px; padding: 28px; width: 480px; max-height: 90vh; overflow-y: auto; }
+    .stat-card { background: #161b22; border: 1px solid #21262d; border-radius: 12px; padding: 18px 20px; }
+    .stat-value { font-size: 26px; font-weight: 700; margin-top: 4px; }
+    .stat-label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+    .live-dot { width: 8px; height: 8px; background: #3fb950; border-radius: 50%; display: inline-block; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media(max-width:768px) { .grid-4{grid-template-columns:repeat(2,1fr)} .grid-2{grid-template-columns:1fr} }
+    .nav { display: flex; gap: 4px; }
+    .nav-btn { padding: 6px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; background: transparent; color: #8b949e; }
+    .nav-btn.active { background: #21262d; color: #e6edf3; font-weight: 600; }
+    .empty { text-align: center; padding: 48px; color: #8b949e; }
+    .signal-bar { height: 6px; border-radius: 3px; background: #21262d; overflow: hidden; }
+    .signal-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useMemo } = React;
+    const { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } = Recharts;
+    const STORAGE_KEY = 'sol_trades_v1';
+    const MEMORY_KEY  = 'sol_signal_memory_v1';
+    const SIGNAL_COMBOS = [
+      { key: 'RSI_OS+MACD_X',      label: 'RSI Oversold + MACD Cross', verdict: 'TAKE',    color: '#3fb950' },
+      { key: 'EMA_GC+MACD_X',      label: 'EMA Golden Cross + MACD',   verdict: 'TAKE',    color: '#3fb950' },
+      { key: 'EMA20_RCL+MACD_X',   label: 'MACD + EMA20 Reclaim',      verdict: 'CAUTION', color: '#d29922' },
+      { key: 'EMA20_RCL+EMA_GC',   label: 'EMA20 Reclaim + GC (no MACD)', verdict: 'SKIP', color: '#f85149' },
+    ];
+    function loadTrades() {
+      try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); } catch { return []; }
+    }
+    function saveTrades(trades) { localStorage.setItem(STORAGE_KEY, JSON.stringify(trades)); }
+    function loadMemory() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(MEMORY_KEY) || 'null');
+        if (saved) return saved;
+      } catch {}
+      return {
+        'RSI_OS+MACD_X':    { wins: 1, losses: 1, pnl: 106.0, trades: 2 },
+        'EMA_GC+MACD_X':    { wins: 1, losses: 0, pnl: 6.6,   trades: 1 },
+        'EMA20_RCL+MACD_X': { wins: 6, losses: 10, pnl: 0.2,  trades: 16 },
+        'EMA20_RCL+EMA_GC': { wins: 0, losses: 2, pnl: -3.0,  trades: 2 },
+      };
+    }
+    function saveMemory(mem) { localStorage.setItem(MEMORY_KEY, JSON.stringify(mem)); }
+    function computeStats(trades) {
+      if (!trades.length) return { pnl: 0, winRate: 0, totalTrades: 0, best: 0, worst: 0, equity: 100 };
+      const wins = trades.filter(t => t.pnl > 0);
+      const losses = trades.filter(t => t.pnl <= 0);
+      const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
+      const equity = trades.reduce((e, t) => e * (1 + t.pnl / 100), 100);
+      return {
+        pnl: totalPnl,
+        winRate: trades.length ? (wins.length / trades.length * 100) : 0,
+        totalTrades: trades.length,
+        best: wins.length ? Math.max(...wins.map(t => t.pnl)) : 0,
+        worst: losses.length ? Math.min(...losses.map(t => t.pnl)) : 0,
+        equity,
+        avgWin: wins.length ? wins.reduce((s,t) => s + t.pnl, 0) / wins.length : 0,
+        avgLoss: losses.length ? losses.reduce((s,t) => s + t.pnl, 0) / losses.length : 0,
+      };
+    }
+    function buildEquityCurve(trades) {
+      const curve = [{ name: 'Start', equity: 100 }];
+      let eq = 100;
+      trades.forEach((t, i) => {
+        eq = eq * (1 + t.pnl / 100);
+        curve.push({ name: 'T'+(i+1), equity: Math.round(eq * 100) / 100 });
+      });
+      return curve;
+    }
+    function fmt(n, decimals) {
+      decimals = decimals === undefined ? 2 : decimals;
+      const abs = Math.abs(n).toFixed(decimals);
+      return n >= 0 ? '+'+abs : '-'+abs;
+    }
+    function AddTradeModal({ onSave, onClose }) {
+      const [form, setForm] = useState({
+        date: new Date().toISOString().slice(0,10),
+        direction: 'LONG',
+        entryPrice: '', exitPrice: '', collateral: '100',
+        leverage: '1', signals: 'EMA20_RCL+MACD_X',
+        tier: 'LOW', notes: '',
+      });
+      const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+      const pricePnl = form.entryPrice && form.exitPrice
+        ? ((parseFloat(form.exitPrice) - parseFloat(form.entryPrice)) / parseFloat(form.entryPrice) * 100) * (form.direction === 'SHORT' ? -1 : 1)
+        : null;
+      const levPnl = pricePnl !== null ? pricePnl * parseFloat(form.leverage || 1) : null;
+      const dollarPnl = levPnl !== null ? (parseFloat(form.collateral || 100) * levPnl / 100) : null;
+      const handleSave = () => {
+        if (!form.entryPrice || !form.exitPrice) return alert('Enter both entry and exit prices');
+        onSave({
+          id: Date.now(),
+          date: form.date,
+          direction: form.direction,
+          entryPrice: parseFloat(form.entryPrice),
+          exitPrice: parseFloat(form.exitPrice),
+          collateral: parseFloat(form.collateral),
+          leverage: parseFloat(form.leverage),
+          signals: form.signals,
+          tier: form.tier,
+          notes: form.notes,
+          pricePnl: Math.round(pricePnl * 100) / 100,
+          pnl: Math.round(levPnl * 100) / 100,
+          dollarPnl: Math.round(dollarPnl * 100) / 100,
+        });
+      };
+      return (
+        React.createElement('div', {className: 'modal-bg', onClick: e => e.target === e.currentTarget && onClose()},
+          React.createElement('div', {className: 'modal'},
+            React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20}},
+              React.createElement('h3', {style:{fontSize:17, fontWeight:700}}, 'Log Trade'),
+              React.createElement('button', {className:'btn btn-ghost', onClick:onClose, style:{padding:'4px 10px'}}, '✕')
+            ),
+            React.createElement('div', {style:{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12}},
+              React.createElement('div', null, React.createElement('label', null, 'Date'), React.createElement('input', {type:'date', value:form.date, onChange:e=>set('date',e.target.value)})),
+              React.createElement('div', null, React.createElement('label', null, 'Direction'),
+                React.createElement('select', {value:form.direction, onChange:e=>set('direction',e.target.value)},
+                  React.createElement('option', null, 'LONG'), React.createElement('option', null, 'SHORT'))),
+              React.createElement('div', null, React.createElement('label', null, 'Entry Price ($)'), React.createElement('input', {type:'number', placeholder:'92.50', value:form.entryPrice, onChange:e=>set('entryPrice',e.target.value)})),
+              React.createElement('div', null, React.createElement('label', null, 'Exit Price ($)'), React.createElement('input', {type:'number', placeholder:'96.40', value:form.exitPrice, onChange:e=>set('exitPrice',e.target.value)})),
+              React.createElement('div', null, React.createElement('label', null, 'Collateral ($)'), React.createElement('input', {type:'number', value:form.collateral, onChange:e=>set('collateral',e.target.value)})),
+              React.createElement('div', null, React.createElement('label', null, 'Leverage'),
+                React.createElement('select', {value:form.leverage, onChange:e=>set('leverage',e.target.value)},
+                  ['1','2','3','5','8','10'].map(l=>React.createElement('option', {key:l}, l))))
+            ),
+            React.createElement('div', {style:{marginBottom:12}},
+              React.createElement('label', null, 'Signal Combo'),
+              React.createElement('select', {value:form.signals, onChange:e=>set('signals',e.target.value)},
+                SIGNAL_COMBOS.map(s=>React.createElement('option', {key:s.key, value:s.key}, s.label)),
+                React.createElement('option', {value:'OTHER'}, 'Other'))),
+            React.createElement('div', {style:{marginBottom:12}},
+              React.createElement('label', null, 'Conviction Tier'),
+              React.createElement('select', {value:form.tier, onChange:e=>set('tier',e.target.value)},
+                React.createElement('option', {value:'MAX'}, 'MAX (RSI extreme + MACD + extra) → 8–10x'),
+                React.createElement('option', {value:'HIGH'}, 'HIGH (RSI active + 2 signals) → 4–5x'),
+                React.createElement('option', {value:'MODERATE'}, 'MODERATE (3 signals, RSI neutral) → 2–3x'),
+                React.createElement('option', {value:'LOW'}, 'LOW (RSI neutral + 2 signals) → 1x'))),
+            React.createElement('div', {style:{marginBottom:16}},
+              React.createElement('label', null, 'Notes'),
+              React.createElement('input', {placeholder:'e.g. strong volume, BTC holding above 70k', value:form.notes, onChange:e=>set('notes',e.target.value)})),
+            levPnl !== null && React.createElement('div', {className:'card', style:{marginBottom:16, background:'#0d1117'}},
+              React.createElement('div', {style:{display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8, textAlign:'center'}},
+                React.createElement('div', null, React.createElement('div', {className:'stat-label'}, 'Price Δ'), React.createElement('div', {style:{fontWeight:700, color: pricePnl >= 0 ? '#3fb950':'#f85149'}}, fmt(pricePnl)+'%')),
+                React.createElement('div', null, React.createElement('div', {className:'stat-label'}, 'Leveraged PnL'), React.createElement('div', {style:{fontWeight:700, color: levPnl >= 0 ? '#3fb950':'#f85149'}}, fmt(levPnl)+'%')),
+                React.createElement('div', null, React.createElement('div', {className:'stat-label'}, 'Dollar PnL'), React.createElement('div', {style:{fontWeight:700, color: dollarPnl >= 0 ? '#3fb950':'#f85149'}}, '$'+fmt(dollarPnl))))),
+            React.createElement('div', {style:{display:'flex', gap:8, justifyContent:'flex-end'}},
+              React.createElement('button', {className:'btn btn-ghost', onClick:onClose}, 'Cancel'),
+              React.createElement('button', {className:'btn btn-green', onClick:handleSave}, 'Save Trade'))
+          )
+        )
+      );
+    }
+    function SignalMemory({ memory }) {
+      return React.createElement('div', null,
+        SIGNAL_COMBOS.map(combo => {
+          const m = memory[combo.key] || { wins:0, losses:0, pnl:0, trades:0 };
+          const wr = m.trades ? (m.wins / m.trades * 100) : 0;
+          const avgPnl = m.trades ? (m.pnl / m.trades) : 0;
+          const fillW = m.trades ? (m.wins / m.trades * 100) : 0;
+          return React.createElement('div', {key:combo.key, style:{marginBottom:16, paddingBottom:16, borderBottom:'1px solid #21262d'}},
+            React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:8}},
+              React.createElement('div', null,
+                React.createElement('span', {style:{fontSize:13, fontWeight:600}}, combo.label),
+                React.createElement('span', {className:'tag '+(combo.verdict==='TAKE'?'tag-green':combo.verdict==='SKIP'?'tag-red':'tag-yellow'), style:{marginLeft:8}},
+                  combo.verdict==='TAKE'?'✅ TAKE':combo.verdict==='SKIP'?'❌ SKIP':'⚠️ CAUTION')),
+              React.createElement('span', {style:{fontSize:13, fontWeight:700, color: avgPnl >= 0 ? '#3fb950':'#f85149'}}, fmt(avgPnl)+'% avg')),
+            React.createElement('div', {style:{display:'flex', gap:16, fontSize:12, color:'#8b949e', marginBottom:8}},
+              React.createElement('span', null, m.trades+' trades'),
+              React.createElement('span', {className:'pos'}, m.wins+'W'),
+              React.createElement('span', {className:'neg'}, m.losses+'L'),
+              React.createElement('span', null, 'Win rate: '+wr.toFixed(0)+'%')),
+            React.createElement('div', {className:'signal-bar'},
+              React.createElement('div', {className:'signal-fill', style:{width:fillW+'%', background: combo.verdict==='TAKE'?'#238636':combo.verdict==='SKIP'?'#da3633':'#9e6a03'}})));
+        })
+      );
+    }
+    function useLivePrice() {
+      const [data, setData] = useState({ price: null, change: null, loading: true });
+      useEffect(() => {
+        const fetch24h = async () => {
+          try {
+            const r = await fetch('https://api.binance.com/api/v3/ticker/24hr?symbol=SOLUSDT');
+            const j = await r.json();
+            setData({ price: parseFloat(j.lastPrice), change: parseFloat(j.priceChangePercent), loading: false });
+          } catch { setData(d => ({ ...d, loading: false })); }
+        };
+        fetch24h();
+        const t = setInterval(fetch24h, 30000);
+        return () => clearInterval(t);
+      }, []);
+      return data;
+    }
+    function useFearGreed() {
+      const [fg, setFg] = useState(null);
+      useEffect(() => {
+        fetch('https://api.alternative.me/fng/?limit=1')
+          .then(r => r.json())
+          .then(j => setFg(j.data[0]))
+          .catch(() => {});
+      }, []);
+      return fg;
+    }
+    function App() {
+      const [trades, setTrades] = useState(loadTrades);
+      const [memory, setMemory] = useState(loadMemory);
+      const [showAdd, setShowAdd] = useState(false);
+      const [activeTab, setActiveTab] = useState('overview');
+      const [confirmDel, setConfirmDel] = useState(null);
+      const { price, change, loading: priceLoading } = useLivePrice();
+      const fg = useFearGreed();
+      const stats = useMemo(() => computeStats(trades), [trades]);
+      const curve = useMemo(() => buildEquityCurve(trades), [trades]);
+      const handleSave = useCallback((trade) => {
+        const next = [...trades, trade];
+        setTrades(next);
+        saveTrades(next);
+        const mem = { ...memory };
+        const k = trade.signals;
+        if (!mem[k]) mem[k] = { wins: 0, losses: 0, pnl: 0, trades: 0 };
+        mem[k].wins   += trade.pnl > 0 ? 1 : 0;
+        mem[k].losses += trade.pnl <= 0 ? 1 : 0;
+        mem[k].pnl    += trade.pnl;
+        mem[k].trades += 1;
+        setMemory(mem);
+        saveMemory(mem);
+        setShowAdd(false);
+      }, [trades, memory]);
+      const deleteTrade = useCallback((id) => {
+        const next = trades.filter(t => t.id !== id);
+        setTrades(next);
+        saveTrades(next);
+        const mem = loadMemory();
+        next.forEach(t => {
+          const k = t.signals;
+          if (!mem[k]) mem[k] = { wins: 0, losses: 0, pnl: 0, trades: 0 };
+          mem[k].wins   += t.pnl > 0 ? 1 : 0;
+          mem[k].losses += t.pnl <= 0 ? 1 : 0;
+          mem[k].pnl    += t.pnl;
+          mem[k].trades += 1;
+        });
+        setMemory(mem);
+        saveMemory(mem);
+        setConfirmDel(null);
+      }, [trades]);
+      const fgColor = fg ? (parseInt(fg.value) >= 60 ? '#f85149' : parseInt(fg.value) <= 30 ? '#3fb950' : '#d29922') : '#8b949e';
+      return React.createElement('div', {style:{maxWidth:1100, margin:'0 auto', padding:'16px 16px 40px'}},
+        React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20, paddingTop:8}},
+          React.createElement('div', {style:{display:'flex', alignItems:'center', gap:12}},
+            React.createElement('div', {style:{fontSize:22, fontWeight:800, letterSpacing:-0.5}}, '◎ SOL Dashboard'),
+            React.createElement('span', {className:'live-dot'}),
+            priceLoading ? React.createElement('span', {style:{color:'#8b949e', fontSize:13}}, 'Loading…') : price &&
+              React.createElement('div', {style:{display:'flex', alignItems:'baseline', gap:6}},
+                React.createElement('span', {style:{fontSize:22, fontWeight:700}}, '$'+price.toFixed(2)),
+                React.createElement('span', {style:{fontSize:13, color: change >= 0 ? '#3fb950':'#f85149', fontWeight:600}}, fmt(change)+'%'))),
+          React.createElement('div', {style:{display:'flex', gap:8, alignItems:'center'}},
+            fg && React.createElement('div', {style:{background:'#161b22', border:'1px solid #21262d', borderRadius:8, padding:'6px 12px', fontSize:12}},
+              React.createElement('span', {style:{color:'#8b949e'}}, 'Fear & Greed: '),
+              React.createElement('span', {style:{color:fgColor, fontWeight:700}}, fg.value+' '+fg.value_classification)),
+            React.createElement('button', {className:'btn btn-green', onClick:()=>setShowAdd(true)}, '+ Log Trade'))),
+        React.createElement('div', {className:'grid-4', style:{marginBottom:16}},
+          React.createElement('div', {className:'stat-card'},
+            React.createElement('div', {className:'stat-label'}, 'Account Value'),
+            React.createElement('div', {className:'stat-value', style:{color: stats.equity >= 100 ? '#3fb950':'#f85149'}}, '$'+stats.equity.toFixed(2)),
+            React.createElement('div', {style:{fontSize:12, color:'#8b949e', marginTop:2}}, 'Started at $100.00')),
+          React.createElement('div', {className:'stat-card'},
+            React.createElement('div', {className:'stat-label'}, 'Total PnL'),
+            React.createElement('div', {className:'stat-value', style:{color: stats.pnl >= 0 ? '#3fb950':'#f85149'}}, fmt(stats.equity - 100, 2)+'$'),
+            React.createElement('div', {style:{fontSize:12, color: stats.pnl >= 0 ? '#3fb950':'#f85149', marginTop:2}}, fmt(stats.equity - 100)+'% on capital')),
+          React.createElement('div', {className:'stat-card'},
+            React.createElement('div', {className:'stat-label'}, 'Win Rate'),
+            React.createElement('div', {className:'stat-value'}, stats.winRate.toFixed(0)+'%'),
+            React.createElement('div', {style:{fontSize:12, color:'#8b949e', marginTop:2}}, trades.filter(t=>t.pnl>0).length+'W / '+trades.filter(t=>t.pnl<=0).length+'L ('+stats.totalTrades+' total)')),
+          React.createElement('div', {className:'stat-card'},
+            React.createElement('div', {className:'stat-label'}, 'Best / Worst Trade'),
+            React.createElement('div', {className:'stat-value', style:{fontSize:18}},
+              React.createElement('span', {className:'pos'}, fmt(stats.best)+'%'),
+              React.createElement('span', {style:{color:'#30363d', margin:'0 6px'}}, '/'),
+              React.createElement('span', {className:'neg'}, fmt(stats.worst)+'%')),
+            React.createElement('div', {style:{fontSize:12, color:'#8b949e', marginTop:2}}, 'Avg W: '+fmt(stats.avgWin||0)+'% | Avg L: '+fmt(stats.avgLoss||0)+'%'))),
+        React.createElement('div', {style:{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}},
+          React.createElement('div', {className:'nav'},
+            ['overview','trades','signals'].map(t=>
+              React.createElement('button', {key:t, className:'nav-btn'+(activeTab===t?' active':''), onClick:()=>setActiveTab(t)},
+                t==='overview'?'📈 Overview':t==='trades'?'📋 Trade Log':'🧠 Signal Memory')))),
+        activeTab === 'overview' && React.createElement('div', null,
+          React.createElement('div', {className:'card', style:{marginBottom:12}},
+            React.createElement('div', {style:{fontSize:13, fontWeight:600, marginBottom:16, color:'#8b949e'}}, 'EQUITY CURVE — $100 START'),
+            trades.length === 0
+              ? React.createElement('div', {className:'empty'}, 'No trades yet.', React.createElement('br'), React.createElement('span', {style:{fontSize:13}}, 'Log your first trade to see the curve.'))
+              : React.createElement(ResponsiveContainer, {width:'100%', height:220},
+                  React.createElement(LineChart, {data:curve},
+                    React.createElement(XAxis, {dataKey:'name', tick:{fill:'#8b949e', fontSize:11}, axisLine:false, tickLine:false}),
+                    React.createElement(YAxis, {tick:{fill:'#8b949e', fontSize:11}, axisLine:false, tickLine:false, domain:['auto','auto']}),
+                    React.createElement(Tooltip, {contentStyle:{background:'#161b22', border:'1px solid #30363d', borderRadius:8}, labelStyle:{color:'#8b949e'}, formatter:(v)=>['$'+v,'']}),
+                    React.createElement(ReferenceLine, {y:100, stroke:'#30363d', strokeDasharray:'4 4'}),
+                    React.createElement(Line, {type:'monotone', dataKey:'equity', stroke:'#388bfd', strokeWidth:2, dot:{fill:'#388bfd', r:3}, activeDot:{r:5}})))),
+          trades.length > 0 && React.createElement('div', {className:'grid-2'},
+            ['MAX','HIGH','MODERATE','LOW'].map(tier => {
+              const ts = trades.filter(t => t.tier === tier);
+              const wins = ts.filter(t => t.pnl > 0).length;
+              const pnl = ts.reduce((s,t) => s + t.pnl, 0);
+              return React.createElement('div', {key:tier, className:'card', style:{padding:'14px 18px'}},
+                React.createElement('div', {style:{display:'flex', justifyContent:'space-between'}},
+                  React.createElement('div', null,
+                    React.createElement('span', {className:'tag', style:{background:'#21262d', color:'#8b949e'}}, tier),
+                    React.createElement('span', {style:{fontSize:13, color:'#8b949e', marginLeft:8}}, ts.length+' trades · '+(ts.length ? (wins/ts.length*100).toFixed(0) : 0)+'% WR')),
+                  React.createElement('span', {style:{fontWeight:700, color: pnl >= 0 ? '#3fb950':'#f85149'}}, fmt(pnl)+'%')));
+            }))),
+        activeTab === 'trades' && React.createElement('div', {className:'card', style:{overflowX:'auto'}},
+          trades.length === 0
+            ? React.createElement('div', {className:'empty'}, 'No trades logged yet.',
+                React.createElement('br'),
+                React.createElement('button', {className:'btn btn-green', style:{marginTop:12}, onClick:()=>setShowAdd(true)}, '+ Log First Trade'))
+            : React.createElement('table', null,
+                React.createElement('thead', null, React.createElement('tr', null,
+                  React.createElement('th', null, '#'), React.createElement('th', null, 'Date'), React.createElement('th', null, 'Dir'),
+                  React.createElement('th', null, 'Entry'), React.createElement('th', null, 'Exit'), React.createElement('th', null, 'Collateral'),
+                  React.createElement('th', null, 'Lev'), React.createElement('th', null, 'Price Δ'), React.createElement('th', null, 'PnL'),
+                  React.createElement('th', null, '$ PnL'), React.createElement('th', null, 'Tier'), React.createElement('th', null, 'Signals'), React.createElement('th', null))),
+                React.createElement('tbody', null,
+                  [...trades].reverse().map((t, i) =>
+                    React.createElement('tr', {key:t.id},
+                      React.createElement('td', {style:{color:'#8b949e'}}, trades.length - i),
+                      React.createElement('td', {style:{color:'#8b949e', whiteSpace:'nowrap'}}, t.date),
+                      React.createElement('td', null, React.createElement('span', {className:'tag '+(t.direction==='LONG'?'tag-green':'tag-red')}, t.direction)),
+                      React.createElement('td', null, '$'+t.entryPrice?.toFixed(2)),
+                      React.createElement('td', null, '$'+t.exitPrice?.toFixed(2)),
+                      React.createElement('td', null, '$'+t.collateral),
+                      React.createElement('td', {style:{fontWeight:700}}, t.leverage+'x'),
+                      React.createElement('td', {style:{color: t.pricePnl >= 0 ? '#3fb950':'#f85149', fontWeight:600}}, fmt(t.pricePnl)+'%'),
+                      React.createElement('td', {style:{color: t.pnl >= 0 ? '#3fb950':'#f85149', fontWeight:700}}, fmt(t.pnl)+'%'),
+                      React.createElement('td', {style:{color: t.dollarPnl >= 0 ? '#3fb950':'#f85149', fontWeight:700}}, '$'+fmt(t.dollarPnl)),
+                      React.createElement('td', null, React.createElement('span', {style:{fontSize:11, color:'#8b949e'}}, t.tier)),
+                      React.createElement('td', {style:{fontSize:11, color:'#8b949e', maxWidth:120, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}, t.signals),
+                      React.createElement('td', null,
+                        confirmDel === t.id
+                          ? React.createElement('div', {style:{display:'flex', gap:4}},
+                              React.createElement('button', {className:'btn btn-red', style:{padding:'2px 8px', fontSize:11}, onClick:()=>deleteTrade(t.id)}, 'Confirm'),
+                              React.createElement('button', {className:'btn btn-ghost', style:{padding:'2px 8px', fontSize:11}, onClick:()=>setConfirmDel(null)}, 'No'))
+                          : React.createElement('button', {className:'btn btn-ghost', style:{padding:'2px 8px', fontSize:11}, onClick:()=>setConfirmDel(t.id)}, '✕'))))))),
+        activeTab === 'signals' && React.createElement('div', {className:'grid-2'},
+          React.createElement('div', {className:'card'},
+            React.createElement('div', {style:{fontSize:13, fontWeight:600, marginBottom:16, color:'#8b949e'}}, '🧠 SIGNAL MEMORY'),
+            React.createElement(SignalMemory, {memory}),
+            React.createElement('div', {style:{fontSize:11, color:'#8b949e', marginTop:12, paddingTop:12, borderTop:'1px solid #21262d'}},
+              'Memory updates automatically every time you log a trade. Trained on 21 backtested trades + your live trades.')),
+          React.createElement('div', null,
+            React.createElement('div', {className:'card', style:{marginBottom:12}},
+              React.createElement('div', {style:{fontSize:13, fontWeight:600, marginBottom:12, color:'#8b949e'}}, '📐 LEVERAGE TIERS'),
+              [{tier:'MAX',lev:'8–10x',desc:'RSI extreme + MACD + extra signal',color:'#f85149'},
+               {tier:'HIGH',lev:'4–5x',desc:'RSI active + 2 signals',color:'#d29922'},
+               {tier:'MODERATE',lev:'2–3x',desc:'RSI neutral + 3 signals',color:'#388bfd'},
+               {tier:'LOW',lev:'1x',desc:'RSI neutral + 2 signals only',color:'#8b949e'}].map(r=>
+                React.createElement('div', {key:r.tier, style:{display:'flex', gap:12, alignItems:'center', padding:'8px 0', borderBottom:'1px solid #21262d'}},
+                  React.createElement('div', {style:{width:24, height:24, background:r.color+'22', border:'1px solid '+r.color, borderRadius:6, display:'flex', alignItems:'center', justifyContent:'center', fontSize:10, color:r.color, fontWeight:700, flexShrink:0}}, r.tier[0]),
+                  React.createElement('div', null,
+                    React.createElement('div', {style:{fontSize:13, fontWeight:600}}, r.tier+' ', React.createElement('span', {style:{color:r.color}}, r.lev)),
+                    React.createElement('div', {style:{fontSize:11, color:'#8b949e'}}, r.desc))))),
+            React.createElement('div', {className:'card'},
+              React.createElement('div', {style:{fontSize:13, fontWeight:600, marginBottom:12, color:'#8b949e'}}, '💡 QUICK RULES'),
+              React.createElement('div', {style:{fontSize:12, color:'#8b949e', lineHeight:1.7}},
+                '• Only trade when the hourly signal fires', React.createElement('br'),
+                '• Set TP/SL on Jupiter before walking away', React.createElement('br'),
+                '• Stop = entry × 0.98 (long) / 1.02 (short)', React.createElement('br'),
+                '• Target = entry × 1.042 (long) / 0.958 (short)', React.createElement('br'),
+                '• Max loss per trade = 10% of account', React.createElement('br'),
+                '• Never stack 2 HIGH conviction positions')))),
+        showAdd && React.createElement(AddTradeModal, {onSave:handleSave, onClose:()=>setShowAdd(false)}));
+    }
+    ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+  </script>
+</body>
+</html>
